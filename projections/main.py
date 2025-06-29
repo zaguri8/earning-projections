@@ -7,7 +7,7 @@ from typing import Dict, Tuple, Optional, Any
 import pandas as pd
 from tqdm import tqdm
 
-API_KEY = os.getenv("SEC_API_KEY") or "496cc958ccd2caa691df79f8b218aee4dcce5d6f72d6b6bc49fec69b6db69404"
+API_KEY = os.getenv("SEC_API_KEY") or "YOUR_API_KEY"
 CURRENT_DIR = Path(__file__).parent
 DEBUG = True
 
