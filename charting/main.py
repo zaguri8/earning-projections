@@ -7,6 +7,7 @@ import argparse
 import plotly.io as pio
 from pathlib import Path
 import re
+from price_projection import PriceProjector
 
 
 CURRENT_DIR = Path(__file__).parent
@@ -18,25 +19,35 @@ parser.add_argument('--input-dir', type=str, default=str(CURRENT_DIR / "../proje
 parser.add_argument('--pe-bear', type=float, default=25, help='P/E ratio for Bear case (default: 25)')
 parser.add_argument('--pe-base', type=float, default=30, help='P/E ratio for Base case (default: 30)')
 parser.add_argument('--pe-bull', type=float, default=35, help='P/E ratio for Bull case (default: 35)')
+parser.add_argument('--target-pe', type=float, default=30, help='Target P/E ratio for unprofitable companies (default: 30)')
+parser.add_argument('--years-to-profitability', type=int, default=None, help='Years to reach target profitability for price projections (default: 3)')
+parser.add_argument('--charting-years-to-profitability', type=int, default=3, help='(DEPRECATED) Years to reach target profitability for price projections (default: 3)')
 parser.add_argument('--current-year', type=str, default='2025', help='Current year (default: 2025)')
 parser.add_argument('--current-price', type=float, default=201, help='Current stock price (default: 201)')
+parser.add_argument('--output-dir', type=str, default=str(CURRENT_DIR / "output"), help='Output directory for charts')
 parser.add_argument('--download', action='store_true', help='Download revenue tables as PNG files', default=True)
 parser.add_argument('--port', type=int, default=8050, help='Port for Dash app (default: 8050)')
 parser.add_argument('--charts', action='store_true', help='Show charts',default=False)
 args = parser.parse_args()
 
 # ---- CONFIGURATION ----
-DATA_DIR = args.input_dir
+DATA_DIR = str(args.input_dir)
 PE_MAP = {
     "Bear": args.pe_bear,
     "Base": args.pe_base,
     "Bull": args.pe_bull
 }
-CURRENT_YEAR = args.current_year
+CURRENT_YEAR = str(args.current_year)  # Ensure it's a string
 CURRENT_YEAR_PRICE = args.current_price
 
+# Determine years_to_profitability from either argument
+if args.years_to_profitability is not None:
+    YEARS_TO_PROFITABILITY = args.years_to_profitability
+else:
+    YEARS_TO_PROFITABILITY = args.charting_years_to_profitability
+
 # Create TICKER_TABLES directory for PNG exports
-TICKER_TABLES_DIR = CURRENT_DIR / "output"
+TICKER_TABLES_DIR = Path(str(args.output_dir))
 if args.download:
     TICKER_TABLES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -107,24 +118,20 @@ main_metrics = [
 def create_revenue_table_figure(scenario):
     """Create a figure specifically for revenue table export"""
     df = dfs[scenario].copy()
-    # remove the last 4 years
-    df = df.iloc[:, 4:]
+    # remove the first 5 years (2020-2024) to show only projections from 2025 onwards
+    df = df.iloc[:, 5:]
 
-    # Add projected price
+    # Add projected price using PriceProjector
     pe = PE_MAP.get(scenario, 25)
-    projected_price = []
+    projector = PriceProjector(
+        pe_ratio=pe,
+        current_year=CURRENT_YEAR,
+        current_price=CURRENT_YEAR_PRICE,
+        target_pe=args.target_pe,
+        years_to_profitability=YEARS_TO_PROFITABILITY
+    )
+    projected_price = projector.project_prices(df)
     if "EPS" in df.index:
-        eps = df.loc["EPS"]
-        for y in df.columns:
-            if y == CURRENT_YEAR:
-                projected_price.append(CURRENT_YEAR_PRICE)
-            elif not pd.isna(eps[y]):
-                try:
-                    projected_price.append(round(float(eps[y]) * pe, 2))
-                except Exception:
-                    projected_price.append("")
-            else:
-                projected_price.append("")
         df.loc["Price"] = projected_price
 
     # Create table data with all metrics
@@ -176,7 +183,7 @@ def create_revenue_table_figure(scenario):
     )])
 
     fig.update_layout(
-        title=f"{args.ticker} - {scenario} Case Financial Projections",
+        title=f"{args.ticker} - {scenario} Case Financial Projections ({CURRENT_YEAR}-{list(df.columns)[-1]})",
         title_font=dict(size=16, family='Arial, sans-serif'),
         width=1000,
         height=400,
@@ -202,21 +209,19 @@ def scenario_charts_table(scenario):
     df = dfs[scenario].copy()
     cards = []
 
-    # --- Add Projected Price ---
+    # --- Add Projected Price using PriceProjector ---
     pe = PE_MAP.get(scenario, 25)
-    projected_price = []
+    # Only project price if CURRENT_YEAR is in df.columns
+    current_year_for_proj = CURRENT_YEAR if CURRENT_YEAR in df.columns else df.columns[-1]
+    projector = PriceProjector(
+        pe_ratio=pe,
+        current_year=current_year_for_proj,
+        current_price=CURRENT_YEAR_PRICE,
+        target_pe=args.target_pe,
+        years_to_profitability=YEARS_TO_PROFITABILITY
+    )
+    projected_price = projector.project_prices(df)
     if "EPS" in df.index:
-        eps = df.loc["EPS"]
-        for y in df.columns:
-            if y == CURRENT_YEAR:
-                projected_price.append(CURRENT_YEAR_PRICE)
-            elif not pd.isna(eps[y]):
-                try:
-                    projected_price.append(round(float(eps[y]) * pe, 2) / 1_00)
-                except Exception:
-                    projected_price.append("")
-            else:
-                projected_price.append("")
         df.loc["Price"] = projected_price
 
     # --- Plot each metric (main metrics + ProjectedPrice) ---
