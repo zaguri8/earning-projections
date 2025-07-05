@@ -1,4 +1,4 @@
-"""Enhanced SEC 10-K Financial Model with Improved Computations and Scalability"""
+"""SEC 10-K Financial Model with Improved Computations and Scalability"""
 
 import os, json, datetime
 from pathlib import Path
@@ -31,7 +31,7 @@ class ProjectionParams:
     terminal_growth_rate: float = 0.025  # Long-term growth rate
     discount_rate: float = 0.10  # WACC approximation
     
-    # New enhanced parameters
+    # New parameters
     capex_as_pct_revenue: Optional[Dict[str, float]] = None
     working_capital_change: Optional[Dict[str, float]] = None
     debt_equity_target: Optional[float] = None
@@ -91,8 +91,8 @@ class FinancialMetrics:
         if self.net_income and self.shares_diluted and self.shares_diluted > 0:
             self.eps = self.net_income / self.shares_diluted
 
-class EnhancedFinancialModel:
-    """Enhanced financial model with improved computations and scalability"""
+class FinancialModel:
+    """Financial model with improved computations and scalability"""
     
     def __init__(self, api_key: str = None):
         self.api_key = api_key or API_KEY
@@ -161,7 +161,7 @@ class EnhancedFinancialModel:
         }
     
     def _normalize_value(self, val: Any) -> Optional[float]:
-        """Enhanced value normalization with better error handling"""
+        """Value normalization with better error handling"""
         if val is None:
             return None
         
@@ -193,7 +193,7 @@ class EnhancedFinancialModel:
             return None
     
     def _find_annual_value(self, data_list: List[Any], target_year: int) -> Optional[float]:
-        """Enhanced annual value finder with better date parsing"""
+        """Annual value finder with better date parsing"""
         if not isinstance(data_list, list):
             return None
         
@@ -241,7 +241,7 @@ class EnhancedFinancialModel:
         return candidates[0][0]
     
     def extract_metrics_from_xbrl(self, xbrl_data: Dict[str, Any], target_year: int) -> FinancialMetrics:
-        """Extract financial metrics from XBRL data with enhanced logic"""
+        """Extract financial metrics from XBRL data with improved logic"""
         metrics = FinancialMetrics()
         
         # Check if this is flat data (all values are numbers)
@@ -354,9 +354,9 @@ class EnhancedFinancialModel:
         
         return None
     
-    def build_enhanced_projections(self, ticker: str, params: ProjectionParams, 
+    def build_projections(self, ticker: str, params: ProjectionParams, 
                                  from_files: bool = False, input_dir: str = "./input") -> Dict[str, pd.DataFrame]:
-        """Build enhanced projections with improved financial modeling"""
+        """Build projections with improved financial modeling"""
         
         # Get historical data
         historical_data = self._get_historical_data(ticker, params, from_files, input_dir)
@@ -409,9 +409,57 @@ class EnhancedFinancialModel:
         
         return df
     
+    def _infer_profitability_assumptions(self, revenue_growth: float, historical_data: pd.DataFrame) -> Tuple[Optional[float], int]:
+        """
+        Infer profitability assumptions from growth rate and historical data
+        
+        Args:
+            revenue_growth: Annual revenue growth rate
+            historical_data: Historical financial data
+            
+        Returns:
+            Tuple of (target_profit_margin, years_to_profitability)
+        """
+        # Check if company is currently profitable
+        last_year_data = historical_data.iloc[-1]
+        current_net_income = last_year_data.get('net_income', 0)
+        current_revenue = last_year_data.get('revenue', 1)
+        
+        # If already profitable, no need for profitability assumptions
+        if current_net_income > 0:
+            return None, 0
+        
+        # Infer assumptions based on growth rate
+        if revenue_growth >= 0.20:  # 20%+ growth (high-growth startup)
+            target_margin = 0.10  # 10% target margin
+            years_to_profit = 7   # 7 years to profitability
+        elif revenue_growth >= 0.15:  # 15-20% growth (growth company)
+            target_margin = 0.12  # 12% target margin
+            years_to_profit = 6   # 6 years to profitability
+        elif revenue_growth >= 0.10:  # 10-15% growth (moderate growth)
+            target_margin = 0.15  # 15% target margin
+            years_to_profit = 5   # 5 years to profitability
+        elif revenue_growth >= 0.05:  # 5-10% growth (mature company)
+            target_margin = 0.18  # 18% target margin
+            years_to_profit = 4   # 4 years to profitability
+        else:  # <5% growth (declining/mature)
+            target_margin = 0.20  # 20% target margin
+            years_to_profit = 3   # 3 years to profitability
+        
+        # Adjust based on current operating margin if available
+        current_op_margin = last_year_data.get('operating_margin', None)
+        if current_op_margin is not None and not pd.isna(current_op_margin):
+            # If already close to breakeven, reduce time to profitability
+            if current_op_margin > -0.05:  # Within 5% of breakeven
+                years_to_profit = max(2, years_to_profit - 2)
+            elif current_op_margin > -0.10:  # Within 10% of breakeven
+                years_to_profit = max(3, years_to_profit - 1)
+        
+        return target_margin, years_to_profit
+
     def _project_scenario(self, historical_data: pd.DataFrame, params: ProjectionParams, 
                          scenario: str) -> pd.DataFrame:
-        """Project financials for a specific scenario with enhanced modeling"""
+        """Project financials for a specific scenario with improved modeling"""
         
         # Get growth rates for this scenario
         revenue_growth = params.revenue_growth.get(scenario, 0.05)
@@ -419,11 +467,29 @@ class EnhancedFinancialModel:
         # Get last historical year data
         last_year_data = historical_data.iloc[-1].copy()
         
+        # Check if company is profitable and infer assumptions if needed
+        current_net_income = last_year_data.get('net_income', 0)
+        is_profitable = current_net_income > 0
+        
+        if not is_profitable:
+            # Infer profitability assumptions from growth rate
+            inferred_target_margin, inferred_years = self._infer_profitability_assumptions(revenue_growth, historical_data)
+            
+            # Use inferred assumptions unless explicitly provided
+            target_margin = params.profit_margin_target if params.profit_margin_target is not None else inferred_target_margin
+            years_to_profit = params.years_to_profitability if params.years_to_profitability != 5 else inferred_years
+            
+            logger.info(f"Unprofitable company detected. Inferred: {target_margin:.1%} margin target, {years_to_profit} years to profitability")
+        else:
+            target_margin = None
+            years_to_profit = 0
+            logger.info("Profitable company detected. Using historical margins with growth rates.")
+        
         # Initialize projection DataFrame
         projection_years = range(params.current_year, params.current_year + params.proj_years)
         projected_data = pd.DataFrame(index=projection_years, columns=historical_data.columns)
         
-        # Enhanced projection logic
+        # Projection logic
         for i, year in enumerate(projection_years):
             if i == 0:
                 base_data = last_year_data
@@ -452,14 +518,16 @@ class EnhancedFinancialModel:
                 sga_growth = revenue_growth * 0.6  # SG&A grows much slower than revenue
                 projected_data.loc[year, 'sga_expense'] = sga_base * (1 + sga_growth)
             
-            # Calculate derived metrics
-            self._calculate_projected_derived_metrics(projected_data, year, base_data, params, scenario, i)
+            # Calculate derived metrics with profitability path for unprofitable companies
+            self._calculate_projected_derived_metrics(projected_data, year, base_data, params, scenario, i, 
+                                                    target_margin, years_to_profit, is_profitable)
         
         return projected_data
     
     def _calculate_projected_derived_metrics(self, projected_data: pd.DataFrame, year: int, 
                                            base_data: pd.Series, params: ProjectionParams, 
-                                           scenario: str, year_index: int):
+                                           scenario: str, year_index: int,
+                                           target_margin: Optional[float], years_to_profit: int, is_profitable: bool):
         """Calculate derived metrics for projected year"""
         
         revenue = projected_data.loc[year, 'revenue']
@@ -641,7 +709,7 @@ class EnhancedFinancialModel:
         logger.info(f"Starting comprehensive analysis for {ticker}")
         
         # Build projections
-        projections = self.build_enhanced_projections(ticker, params, from_files, input_dir)
+        projections = self.build_projections(ticker, params, from_files, input_dir)
         
         # Calculate valuations
         valuations = self.calculate_valuation_metrics(projections, params)

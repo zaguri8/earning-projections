@@ -2,7 +2,7 @@ import pandas as pd
 from typing import List, Optional, Dict
 
 class PriceProjector:
-    """Enhanced price projection with better error handling and flexibility"""
+    """Price projection with better error handling and flexibility"""
     
     def __init__(self, pe_ratio: float, current_year: str, current_price: float, 
                  target_pe: Optional[float] = None, years_to_profitability: int = 3):

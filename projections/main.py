@@ -1,15 +1,14 @@
-"""Enhanced SEC 10-K Financial Model with Improved Computations and Scalability"""
+"""SEC 10-K Financial Model with Improved Computations and Scalability"""
 
-import os, json, datetime
+import os, json, datetime, argparse
 from pathlib import Path
-from typing import Dict, Tuple, Optional, Any
-import argparse
+from typing import Dict, Tuple, Optional, List
 from dataclasses import asdict
 
 import pandas as pd
-from tqdm import tqdm
+import numpy as np
 
-from enhanced_model import EnhancedFinancialModel, ProjectionParams
+from financial_model import FinancialModel, ProjectionParams
 
 API_KEY = os.getenv("SEC_API_KEY") or "YOUR_API_KEY"
 CURRENT_DIR = Path(__file__).parent
@@ -46,7 +45,7 @@ def _list_available_files(input_dir: str = "./input") -> dict:
     return available
 
 # -------------------------------------------------------------------- #
-#  Main Projection Function (updated to use enhanced model)
+#  Main Projection Function (updated to use financial model)
 # -------------------------------------------------------------------- #
 def build_projections(ticker: str, years_back: int = 5, current_year: int = 2025, proj_years: int = 5,
                      growth: Optional[Dict[str, Dict[str, float]]] = {"revenue": {"bear": 0.02, "base": 0.05, "bull": 0.09}},
@@ -54,7 +53,7 @@ def build_projections(ticker: str, years_back: int = 5, current_year: int = 2025
                      profit_margin_target: Optional[float] = 0.15, years_to_profitability: int = 5,
                      margin_growth: Optional[Dict[str, float]] = None) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Build projections starting from current_year for proj_years using enhanced model
+    Build projections starting from current_year for proj_years using financial model
     
     Args:
         ticker: Stock ticker symbol
@@ -76,8 +75,8 @@ def build_projections(ticker: str, years_back: int = 5, current_year: int = 2025
         if ticker.upper() in available:
             print(f"Available years for {ticker}: {sorted(available[ticker.upper()])}")
     
-    # Create enhanced model instance
-    model = EnhancedFinancialModel(API_KEY)
+    # Create financial model instance
+    model = FinancialModel(API_KEY)
     
     # Create projection parameters
     params = ProjectionParams(
@@ -112,7 +111,7 @@ def build_projections(ticker: str, years_back: int = 5, current_year: int = 2025
     results['projections']['base'].to_csv(directory / f"{ticker}_base.csv")
     results['projections']['bull'].to_csv(directory / f"{ticker}_bull.csv")
     
-    # Save enhanced results
+    # Save results
     with open(directory / f"{ticker}_valuations.json", 'w') as f:
         json.dump(results['valuations'], f, indent=2)
     
@@ -125,14 +124,14 @@ def build_projections(ticker: str, years_back: int = 5, current_year: int = 2025
             results['projections']['bull'])
 
 # -------------------------------------------------------------------- #
-#  Test Functions (updated to use enhanced model)
+#  Test Functions (updated to use financial model)
 # -------------------------------------------------------------------- #
 def test_single_year(ticker: str, year: int, from_files: bool = False, input_dir: str = "./input"):
-    """Test extraction for a single year using enhanced model"""
+    """Test extraction for a single year using financial model"""
     debug_print(f"Testing {ticker} for year {year}")
     
     try:
-        model = EnhancedFinancialModel(API_KEY)
+        model = FinancialModel(API_KEY)
         
         if from_files:
             xbrl_data = model._load_from_file(ticker, year, input_dir)
@@ -141,7 +140,7 @@ def test_single_year(ticker: str, year: int, from_files: bool = False, input_dir
         
         debug_print(f"Available sections: {list(xbrl_data.keys())}")
         
-        # Extract metrics using enhanced model
+        # Extract metrics using financial model
         metrics = model.extract_metrics_from_xbrl(xbrl_data, year)
         
         print(f"\nResults for {ticker} {year}:")
