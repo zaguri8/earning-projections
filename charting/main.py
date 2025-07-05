@@ -12,6 +12,7 @@ from price_projection import PriceProjector
 
 CURRENT_DIR = Path(__file__).parent
 
+NUMERIC_METRICS = ["Price","Revenue", "NetIncome", "FCF","EPS","GrossMargin", "OperatingMargin", "NetMargin", "FCFMargin"]
 # ---- COMMAND LINE ARGUMENTS ----
 parser = argparse.ArgumentParser(description='Financial Model Dashboard with PNG Export')
 parser.add_argument('--ticker', type=str, default='AAPL', help='Stock ticker symbol (default: AAPL)')
@@ -118,8 +119,15 @@ main_metrics = [
 def create_revenue_table_figure(scenario):
     """Create a figure specifically for revenue table export"""
     df = dfs[scenario].copy()
-    # remove the first 5 years (2020-2024) to show only projections from 2025 onwards
-    df = df.iloc[:, 5:]
+    # remove the historical years to show only projections from CURRENT_YEAR onwards
+    # Find the column index for CURRENT_YEAR
+    
+    if CURRENT_YEAR in df.columns:
+        start_idx = df.columns.get_loc(CURRENT_YEAR)
+        df = df.iloc[:, start_idx:]
+    else:
+        # If CURRENT_YEAR is not found, remove the first 4 years
+        df = df.iloc[:, 4:]
 
     # Add projected price using PriceProjector
     pe = PE_MAP.get(scenario, 25)
@@ -130,17 +138,44 @@ def create_revenue_table_figure(scenario):
         target_pe=args.target_pe,
         years_to_profitability=YEARS_TO_PROFITABILITY
     )
+    # Calculate growth percentages for each metric
+    for metric in main_metrics:
+        if metric in df.index:
+            # Create a new row for growth percentages
+            growth_row_name = f"{metric}_Growth"
+            # Convert DataFrame to object type to avoid dtype warnings when inserting strings
+            if df.dtypes[df.columns[0]] != 'object':
+                df = df.astype(object)
+            df.loc[growth_row_name] = [""] * len(df.columns)  # Initialize with empty strings
+            
+            # Calculate growth % for each year relative to previous year
+            for i, col in enumerate(df.columns[1:], 1):
+                try:
+                    current_val = float(df.loc[metric, col])
+                    prev_val = float(df.loc[metric, df.columns[i-1]])
+                    if prev_val != 0 and not pd.isna(prev_val) and not pd.isna(current_val):
+                        growth_pct = (current_val - prev_val) / abs(prev_val) * 100
+                        df.loc[growth_row_name, col] = f"{growth_pct:+.1f}%"
+                    else:
+                        df.loc[growth_row_name, col] = ""
+                except (ValueError, TypeError):
+                    df.loc[growth_row_name, col] = ""
+            
+            # First year has no growth to compare against
+            df.loc[growth_row_name, df.columns[0]] = ""
+
+    
     projected_price = projector.project_prices(df)
-    if "EPS" in df.index:
-        df.loc["Price"] = projected_price
+    df.loc["Price"] = projected_price
 
     # Create table data with all metrics
     table_data = []
     headers = ['Metric'] + list(df.columns)
     
-    # Add all main metrics + ProjectedPrice
+    # Add all main metrics + ProjectedPrice with selective growth rows
     for metric in main_metrics + ["Price"]:
         if metric in df.index:
+            # Add the main metric row
             metric_name = camel_to_spaces(metric)
             if metric == "FCFMargin":
                 metric_name = "FCF Margin"
@@ -150,17 +185,22 @@ def create_revenue_table_figure(scenario):
                 if pd.isna(val):
                     row.append("")
                 else:
-                    if metric == "Price":
-                        row.append(format_large_number(val, metric))
-                    elif metric in ["Revenue", "NetIncome", "FCF"]:
-                        row.append(format_large_number(val, metric))
-                    elif metric in ["GrossMargin", "OperatingMargin", "NetMargin", "FCFMargin"]:
-                        row.append(format_large_number(val, metric))
-                    elif metric == "EPS":
+                    if metric in NUMERIC_METRICS:
                         row.append(format_large_number(val, metric))
                     else:
-                        row.append(format_large_number(val, metric))
+                        row.append(str(val))
             table_data.append(row)
+            
+            # Add growth row only for key metrics (Revenue, Net Income, EPS, FCF)
+            if metric in ["Revenue", "NetIncome", "EPS", "FCF"]:
+                growth_row_name = f"{metric}_Growth"
+                if growth_row_name in df.index:
+                    growth_metric_name = f"{metric_name} Growth %"
+                    row = [growth_metric_name]
+                    for col in df.columns:
+                        val = df.loc[growth_row_name, col]
+                        row.append(val if val != "" else "")
+                    table_data.append(row)
 
     fig = go.Figure(data=[go.Table(
         columnwidth=[180] + [80] * (len(df.columns)),  # 180px for first column, 80px for the rest
@@ -182,12 +222,21 @@ def create_revenue_table_figure(scenario):
         )
     )])
 
+    # Dynamically set figure height based on number of rows
+    # Account for header (35px) + each row (30px) + margins + extra space
+    header_height = 35
+    row_height = 30
+    total_table_height = header_height + (row_height * len(table_data))
+    fig_height = max(2000, total_table_height + 800)  # Much larger height to ensure all rows are visible
+
     fig.update_layout(
         title=f"{args.ticker} - {scenario} Case Financial Projections ({CURRENT_YEAR}-{list(df.columns)[-1]})",
         title_font=dict(size=16, family='Arial, sans-serif'),
         width=1000,
-        height=400,
-        margin=dict(l=20, r=20, t=60, b=20)
+        height=fig_height,
+        margin=dict(l=20, r=20, t=60, b=20),
+        # Force the table to show all rows
+        autosize=False
     )
     return fig
 
@@ -221,8 +270,7 @@ def scenario_charts_table(scenario):
         years_to_profitability=YEARS_TO_PROFITABILITY
     )
     projected_price = projector.project_prices(df)
-    if "EPS" in df.index:
-        df.loc["Price"] = projected_price
+    df.loc["Price"] = projected_price
 
     # --- Plot each metric (main metrics + ProjectedPrice) ---
     for metric in main_metrics + ["Price"]:

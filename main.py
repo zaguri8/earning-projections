@@ -62,6 +62,12 @@ Examples:
                                    help='Target profit margin for unprofitable companies (default: 0.15)')
     projections_parser.add_argument('--years-to-profitability', type=int, default=5,
                                    help='Years to reach target profitability (default: 5)')
+    projections_parser.add_argument('--margin-growth-bear', type=float, default=None,
+                                   help='Annual margin growth for profitable companies in bear case (e.g., 0.02 for 2% growth)')
+    projections_parser.add_argument('--margin-growth-base', type=float, default=None,
+                                   help='Annual margin growth for profitable companies in base case (e.g., 0.02 for 2% growth)')
+    projections_parser.add_argument('--margin-growth-bull', type=float, default=None,
+                                   help='Annual margin growth for profitable companies in bull case (e.g., 0.02 for 2% growth)')
     projections_parser.add_argument('--projections-input-dir', type=str,
                                    default=str(Path(__file__).parent / "filings/output"),
                                    help='Input directory for filing data')
@@ -124,6 +130,12 @@ Examples:
                                help='Target profit margin for unprofitable companies (default: 0.15)')
     run_all_parser.add_argument('--years-to-profitability', type=int, default=5,
                                help='Years to reach target profitability (default: 5)')
+    run_all_parser.add_argument('--margin-growth-bear', type=float, default=None,
+                               help='Annual margin growth for profitable companies in bear case (e.g., 0.02 for 2% growth)')
+    run_all_parser.add_argument('--margin-growth-base', type=float, default=None,
+                               help='Annual margin growth for profitable companies in base case (e.g., 0.02 for 2% growth)')
+    run_all_parser.add_argument('--margin-growth-bull', type=float, default=None,
+                               help='Annual margin growth for profitable companies in bull case (e.g., 0.02 for 2% growth)')
     run_all_parser.add_argument('--projections-input-dir', type=str,
                                default=str(Path(__file__).parent / "filings/output"),
                                help='Input directory for filing data')
@@ -186,6 +198,15 @@ def run_projections(args):
         "--input-dir", args.projections_input_dir,
         "--output-dir", args.projections_output_dir
     ]
+    
+    # Add margin growth parameters if provided
+    if hasattr(args, 'margin_growth_bear') and args.margin_growth_bear is not None:
+        cmd.extend(["--margin-growth-bear", str(args.margin_growth_bear)])
+    if hasattr(args, 'margin_growth_base') and args.margin_growth_base is not None:
+        cmd.extend(["--margin-growth-base", str(args.margin_growth_base)])
+    if hasattr(args, 'margin_growth_bull') and args.margin_growth_bull is not None:
+        cmd.extend(["--margin-growth-bull", str(args.margin_growth_bull)])
+    
     return subprocess.run(cmd, check=True)
 
 def run_charting(args):

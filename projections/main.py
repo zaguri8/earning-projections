@@ -427,50 +427,81 @@ def _history(tkr: str, back: int, current_year: int | None = None, from_files: b
 
 # -------------------------------------------------------------------- #
 def _proj(df: pd.DataFrame, start_year: int, num_years: int, ass: Dict[str, Dict[str, float]], s: str, 
-          profit_margin_target: Optional[float] = None, years_to_profitability: int = 5) -> pd.DataFrame:
+          profit_margin_target: Optional[float] = None, years_to_profitability: int = 5, 
+          margin_growth: Optional[Dict[str, float]] = None) -> pd.DataFrame:
     """
-    Improved projection logic for accuracy and realism.
+    Completely rewritten projection logic for accuracy and realism.
     """
     p = df.copy()
     last_hist_year = p.columns[-1]
     shares_growth = 0.01  # 1% per year dilution
+    
+    # Get growth rate for this scenario
+    revenue_growth = ass.get("revenue", {}).get(s, 0.05)  # Default to 5% if not specified
+    
     for i in range(num_years):
         y = str(start_year + i)
         col = {}
-        # Always use last historical year as base for first projection year
         prev_year = last_hist_year if i == 0 else str(start_year + i - 1)
-        # Project base metrics
+        
+        # First, project Revenue (needed for margin calculations)
+        revenue_base = p.at["Revenue", prev_year]
+        if not pd.isna(revenue_base):
+            col["Revenue"] = revenue_base * (1 + revenue_growth)
+        
+        # Project other base metrics
         for m in p.index:
+            if m == "Revenue":  # Already calculated above
+                continue
+                
             base = p.at[m, prev_year]
             if pd.isna(base):
                 col[m] = None
                 continue
-            g = ass.get(m, {}).get(s, ass.get("revenue", {}).get(s, 0))
+                
             if m == "SharesDiluted":
                 col[m] = base * (1 + shares_growth)
-            elif m in ["Revenue", "COGS", "R&D", "SG&A", "CapEx"]:
-                col[m] = base * (1 + g)
+            elif m in ["COGS", "R&D", "SG&A", "CapEx"]:
+                # These scale with revenue growth
+                col[m] = base * (1 + revenue_growth)
             elif m in ["OperatingIncome", "NetIncome"]:
-                # Project toward target margin if unprofitable, else use growth
-                revenue_col = p.loc["Revenue", prev_year] if "Revenue" in p.index else None
-                if base < 0 and profit_margin_target is not None and revenue_col and revenue_col > 0:
-                    target_value = revenue_col * profit_margin_target
-                    improvement_per_year = (target_value - base) / years_to_profitability
-                    col[m] = base + improvement_per_year * (i + 1)
-                    if col[m] > target_value:
-                        col[m] = target_value
+                # Calculate based on target margins
+                if "Revenue" in col and col["Revenue"] and col["Revenue"] > 0:
+                    if profit_margin_target is not None:
+                        # Calculate target value for this year
+                        target_value = col["Revenue"] * profit_margin_target
+                        
+                        if base < 0:  # Currently unprofitable
+                            # Linear improvement toward target over years_to_profitability
+                            improvement_per_year = (target_value - base) / years_to_profitability
+                            projected_value = base + improvement_per_year * (i + 1)
+                            col[m] = min(projected_value, target_value)  # Don't exceed target
+                        else:  # Already profitable
+                            # Check if margin growth is specified for this scenario
+                            if margin_growth and s in margin_growth and margin_growth[s] is not None:
+                                # Apply margin growth to the base value
+                                col[m] = base * (1 + margin_growth[s])
+                            else:
+                                # Maintain historical profitability, don't force down to target
+                                col[m] = base * (1 + revenue_growth)
+                    else:
+                        # No target margin, use growth rate
+                        col[m] = base * (1 + revenue_growth)
                 else:
-                    col[m] = base * (1 + g)
+                    col[m] = base * (1 + revenue_growth)
             elif m in ["CFO", "FCF"]:
-                # FCF/CFO: if NetIncome is positive, project positive; else slow improvement
-                ni = col.get("NetIncome", base)
-                if ni > 0:
-                    col[m] = abs(base) * (1 + g)  # turn positive, scale with growth
+                # These depend on NetIncome
+                if "NetIncome" in col and col["NetIncome"] and col["NetIncome"] > 0:
+                    # If profitable, CFO should be positive and scale with growth
+                    col[m] = abs(base) * (1 + revenue_growth) if base < 0 else base * (1 + revenue_growth)
                 else:
-                    col[m] = base * (1 + g * 0.3)
+                    # If unprofitable, slow improvement
+                    col[m] = base * (1 + revenue_growth * 0.3)
             else:
-                col[m] = base * (1 + g)
+                col[m] = base * (1 + revenue_growth)
+        
         p[y] = pd.Series(col)
+    
     # Post-process: recalculate all derived metrics for every year
     for y in p.columns:
         # EPS
@@ -478,11 +509,13 @@ def _proj(df: pd.DataFrame, start_year: int, num_years: int, ass: Dict[str, Dict
         sh = p.at["SharesDiluted", y] if "SharesDiluted" in p.index else None
         if ni is not None and sh is not None and sh > 0:
             p.at["EPS", y] = ni / sh
+        
         # GrossProfit
         rev = p.at["Revenue", y] if "Revenue" in p.index else None
         cogs = p.at["COGS", y] if "COGS" in p.index else None
         if rev is not None and cogs is not None:
             p.at["GrossProfit", y] = rev - cogs
+        
         # Margins
         if rev and rev > 0:
             if "GrossProfit" in p.index:
@@ -493,11 +526,13 @@ def _proj(df: pd.DataFrame, start_year: int, num_years: int, ass: Dict[str, Dict
                 p.at["NetMargin", y] = p.at["NetIncome", y] / rev
             if "FCF" in p.index:
                 p.at["FCFMargin", y] = p.at["FCF", y] / rev
+        
         # FCF: CFO - abs(CapEx)
         cfo = p.at["CFO", y] if "CFO" in p.index else None
         capex = p.at["CapEx", y] if "CapEx" in p.index else None
         if cfo is not None and capex is not None:
             p.at["FCF", y] = cfo - abs(capex)
+    
     p = p[p.columns.sort_values(key=lambda x: [int(c) if c.isdigit() else 9999 for c in p.columns])]
     return p
 
@@ -505,7 +540,8 @@ def _proj(df: pd.DataFrame, start_year: int, num_years: int, ass: Dict[str, Dict
 def build_projections(ticker:str, years_back:int=5, current_year:int=2025, proj_years:int=5,
                       growth:Optional[Dict[str,Dict[str,float]]]={"revenue":{"bear":0.02,"base":0.05,"bull":0.09}},
                       out_dir:Optional[str]=None, from_files:bool=False, input_dir:str="./input",
-                      profit_margin_target:Optional[float]=0.15, years_to_profitability:int=5)->Tuple[pd.DataFrame,pd.DataFrame,pd.DataFrame]:
+                      profit_margin_target:Optional[float]=0.15, years_to_profitability:int=5,
+                      margin_growth:Optional[Dict[str,float]]=None)->Tuple[pd.DataFrame,pd.DataFrame,pd.DataFrame]:
     """
     Build projections starting from current_year for proj_years
     
@@ -537,9 +573,9 @@ def build_projections(ticker:str, years_back:int=5, current_year:int=2025, proj_
     
     # Project from current_year for proj_years
     # Example: if current_year=2025 and proj_years=5, project 2025-2029
-    bear = _proj(hist, current_year, proj_years, growth, "bear", profit_margin_target, years_to_profitability)
-    base = _proj(hist, current_year, proj_years, growth, "base", profit_margin_target, years_to_profitability)
-    bull = _proj(hist, current_year, proj_years, growth, "bull", profit_margin_target, years_to_profitability)
+    bear = _proj(hist, current_year, proj_years, growth, "bear", profit_margin_target, years_to_profitability, margin_growth)
+    base = _proj(hist, current_year, proj_years, growth, "base", profit_margin_target, years_to_profitability, margin_growth)
+    bull = _proj(hist, current_year, proj_years, growth, "bull", profit_margin_target, years_to_profitability, margin_growth)
     
     directory = Path(out_dir or f"./{ticker}_model")
     directory.mkdir(exist_ok=True, parents=True)
@@ -643,6 +679,9 @@ if __name__ == "__main__":
     p.add_argument("--growth-bull", type=float, default=0.09, help="Growth rate for bull case (default: 0.09)")
     p.add_argument("--profit-margin-target", type=float, default=0.15, help="Target profit margin to reach (default: 0.15 for 15%)")
     p.add_argument("--years-to-profitability", type=int, default=5, help="Years to reach target profitability (default: 5)")
+    p.add_argument("--margin-growth-bear", type=float, default=None, help="Annual margin growth for profitable companies in bear case (e.g., 0.02 for 2% growth)")
+    p.add_argument("--margin-growth-base", type=float, default=None, help="Annual margin growth for profitable companies in base case (e.g., 0.02 for 2% growth)")
+    p.add_argument("--margin-growth-bull", type=float, default=None, help="Annual margin growth for profitable companies in bull case (e.g., 0.02 for 2% growth)")
     p.add_argument("--output-dir", default=str(CURRENT_DIR / "output"))
     p.add_argument("--from-files", action="store_true", help="Load data from local files instead of SEC API",default=True)
     p.add_argument("--input-dir", default=str(CURRENT_DIR / "../filings/output"), help="Directory containing input JSON files")
@@ -656,11 +695,20 @@ if __name__ == "__main__":
     else:
         # Run full projection
         try:
+            # Prepare margin growth dict if any parameters are provided
+            margin_growth = None
+            if args.margin_growth_bear is not None or args.margin_growth_base is not None or args.margin_growth_bull is not None:
+                margin_growth = {
+                    "bear": args.margin_growth_bear,
+                    "base": args.margin_growth_base,
+                    "bull": args.margin_growth_bull
+                }
+            
             hist, (bear, base, bull) = build_projections(
                 args.ticker, args.years_back, args.current_year, args.proj_years,
                 {"revenue":{"bear":args.growth_bear,"base":args.growth_base,"bull":args.growth_bull}},
                 args.output_dir, args.from_files, args.input_dir,
-                args.profit_margin_target, args.years_to_profitability
+                args.profit_margin_target, args.years_to_profitability, margin_growth
             )
             print(f"\nProjections for {args.ticker} ({args.current_year}-{args.current_year + args.proj_years - 1}):")
             print(f"Target profit margin: {args.profit_margin_target:.1%}")

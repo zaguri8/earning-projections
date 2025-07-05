@@ -21,6 +21,31 @@ class PriceProjector:
         years = df.columns
         projected_price = []
         last_positive_pe = self.pe_ratio
+        
+        # Handle case where years_to_profitability is 0
+        if self.years_to_profitability == 0:
+            for i, y in enumerate(years):
+                if y == self.current_year:
+                    projected_price.append(self.current_price)
+                    continue
+                try:
+                    eps_val = float(eps[y])
+                except Exception:
+                    projected_price.append("")
+                    continue
+                if pd.isna(eps_val):
+                    projected_price.append("")
+                    continue
+                # If EPS is positive, use normal PE
+                if eps_val > 0:
+                    price = round(eps_val * self.pe_ratio, 2)
+                    projected_price.append(price)
+                    last_positive_pe = self.pe_ratio
+                else:
+                    # Instantly set to target price for negative EPS
+                    target_price = round(self.target_pe * 0.01, 2)
+                    projected_price.append(target_price)
+            return projected_price
         for i, y in enumerate(years):
             if y == self.current_year:
                 projected_price.append(self.current_price)
