@@ -97,8 +97,8 @@ Examples:
     charting_parser.add_argument('--charting-output-dir', type=str,
                                 default=str(Path(__file__).parent / "charting/output"),
                                 help='Output directory for charts')
-    charting_parser.add_argument('--download', action='store_true', default=True,
-                                help='Download revenue tables as PNG files')
+    charting_parser.add_argument('--export', action='store_true', default=True,
+                                help='Export revenue tables as PNG files')
     charting_parser.add_argument('--charts', action='store_true', default=False,
                                 help='Show interactive charts')
     charting_parser.add_argument('--port', type=int, default=8050,
@@ -160,8 +160,8 @@ Examples:
     run_all_parser.add_argument('--charting-output-dir', type=str,
                                default=str(Path(__file__).parent / "charting/output"),
                                help='Output directory for charts')
-    run_all_parser.add_argument('--download', action='store_true', default=True,
-                               help='Download revenue tables as PNG files')
+    run_all_parser.add_argument('--export', action='store_true', default=True,
+                               help='Export revenue tables as PNG files')
     run_all_parser.add_argument('--charts', action='store_true', default=False,
                                help='Show interactive charts')
     run_all_parser.add_argument('--port', type=int, default=8050,
@@ -225,8 +225,8 @@ def run_charting(args):
         "--input-dir", str(args.charting_input_dir),
         "--output-dir", str(args.charting_output_dir)
     ]
-    if args.download:
-        cmd.append("--download")
+    if args.export:
+        cmd.append("--export")
     if args.charts:
         cmd.append("--charts")
     cmd.extend(["--port", str(args.port)])

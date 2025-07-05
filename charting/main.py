@@ -1,413 +1,79 @@
-import os
-import pandas as pd
-import dash
-from dash import html, dcc, dash_table
-import plotly.graph_objs as go
 import argparse
-import plotly.io as pio
 from pathlib import Path
-import re
-from price_projection import PriceProjector
+from config import DashboardConfig, ScenarioConfig, ConfigManager
+from data_manager import DataManager
+from formatters import DataFormatter
+from chart_generator import ChartGenerator
+from dashboard_generator import DashboardGenerator
+from exporter import DataExporter
 
-
-CURRENT_DIR = Path(__file__).parent
-
-NUMERIC_METRICS = ["Price","Revenue", "NetIncome", "FCF","EPS","GrossMargin", "OperatingMargin", "NetMargin", "FCFMargin"]
-# ---- COMMAND LINE ARGUMENTS ----
-parser = argparse.ArgumentParser(description='Financial Model Dashboard with PNG Export')
-parser.add_argument('--ticker', type=str, default='AAPL', help='Stock ticker symbol (default: AAPL)')
-parser.add_argument('--input-dir', type=str, default=str(CURRENT_DIR / "../projections/output"), help='Directory containing CSV files (default: ./output)')
-parser.add_argument('--pe-bear', type=float, default=25, help='P/E ratio for Bear case (default: 25)')
-parser.add_argument('--pe-base', type=float, default=30, help='P/E ratio for Base case (default: 30)')
-parser.add_argument('--pe-bull', type=float, default=35, help='P/E ratio for Bull case (default: 35)')
-parser.add_argument('--target-pe', type=float, default=30, help='Target P/E ratio for unprofitable companies (default: 30)')
-parser.add_argument('--years-to-profitability', type=int, default=None, help='Years to reach target profitability for price projections (default: 3)')
-parser.add_argument('--charting-years-to-profitability', type=int, default=3, help='(DEPRECATED) Years to reach target profitability for price projections (default: 3)')
-parser.add_argument('--current-year', type=str, default='2025', help='Current year (default: 2025)')
-parser.add_argument('--current-price', type=float, default=201, help='Current stock price (default: 201)')
-parser.add_argument('--output-dir', type=str, default=str(CURRENT_DIR / "output"), help='Output directory for charts')
-parser.add_argument('--download', action='store_true', help='Download revenue tables as PNG files', default=True)
-parser.add_argument('--port', type=int, default=8050, help='Port for Dash app (default: 8050)')
-parser.add_argument('--charts', action='store_true', help='Show charts',default=False)
-args = parser.parse_args()
-
-# ---- CONFIGURATION ----
-DATA_DIR = str(args.input_dir)
-PE_MAP = {
-    "Bear": args.pe_bear,
-    "Base": args.pe_base,
-    "Bull": args.pe_bull
-}
-CURRENT_YEAR = str(args.current_year)  # Ensure it's a string
-CURRENT_YEAR_PRICE = args.current_price
-
-# Determine years_to_profitability from either argument
-if args.years_to_profitability is not None:
-    YEARS_TO_PROFITABILITY = args.years_to_profitability
-else:
-    YEARS_TO_PROFITABILITY = args.charting_years_to_profitability
-
-# Create TICKER_TABLES directory for PNG exports
-TICKER_TABLES_DIR = Path(str(args.output_dir))
-if args.download:
-    TICKER_TABLES_DIR.mkdir(parents=True, exist_ok=True)
-
-def camel_to_spaces(s):
-    """
-    Convert a camel case string to a space separated string.
-    """
-    return re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', s)
-
-def format_large_number(val, metric):
-    """Format large numbers in millions format if they exceed 100,000,000"""
-    if pd.isna(val):
-        return ""
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Scalable Financial Model Dashboard')
+    parser.add_argument('--ticker', type=str, default='AAPL', help='Stock ticker symbol')
+    parser.add_argument('--input-dir', type=str, default='./output', help='Input directory')
+    parser.add_argument('--output-dir', type=str, default='./exports', help='Output directory')
+    parser.add_argument('--current-year', type=str, default='2025', help='Current year')
+    parser.add_argument('--current-price', type=float, default=201, help='Current stock price')
+    parser.add_argument('--pe-bear', type=float, default=25, help='Bear case PE ratio')
+    parser.add_argument('--pe-base', type=float, default=30, help='Base case PE ratio')
+    parser.add_argument('--pe-bull', type=float, default=35, help='Bull case PE ratio')
+    parser.add_argument('--target-pe', type=float, default=30, help='Target PE for unprofitable companies')
+    parser.add_argument('--years-to-profitability', type=int, default=3, help='Years to profitability')
+    parser.add_argument('--port', type=int, default=8050, help='Dashboard port')
+    parser.add_argument('--export', action='store_true', help='Export tables as PNG')
+    parser.add_argument('--run-dashboard', action='store_true', help='Run interactive dashboard')
     
-    try:
-        val_float = float(val)
-        if val_float > 100_000_000 and metric in ["Revenue", "NetIncome", "FCF"]:
-            return f"${val_float / 1_000_000:.1f}M"
-        elif metric == "Price":
-            return f"${val_float:.2f}"
-        elif metric in ["Revenue", "NetIncome", "FCF"]:
-            return f"${val_float:,.0f}"
-        elif metric in ["GrossMargin", "OperatingMargin", "NetMargin", "FCFMargin"]:
-            return f"{val_float:.1f}%"
-        elif metric == "EPS":
-            return f"${val_float:.2f}"
-        else:
-            return f"{val_float:.2f}"
-    except Exception:
-        return str(val)
+    return parser.parse_args()
 
-def load_csv(name):
-    """
-    Load a CSV file from the data directory.
-    """
-    for fname in os.listdir(DATA_DIR):
-        if fname.lower().startswith(name.lower()) and fname.lower().endswith('.csv'):
-            file_path = os.path.join(DATA_DIR, fname)
-            return pd.read_csv(file_path, index_col=0)
+def create_config(args) -> DashboardConfig:
+    """Create configuration from arguments"""
+    scenarios = [
+        ScenarioConfig("bear", "Bear Case", "#ce3c3c", args.pe_bear),
+        ScenarioConfig("base", "Base Case", "#368fc7", args.pe_base),
+        ScenarioConfig("bull", "Bull Case", "#18a551", args.pe_bull),
+        ScenarioConfig("historical", "Historical", "#444", args.pe_base),
+    ]
     
-    return None
-
-dfs = {
-    "Historical": load_csv(f"{args.ticker}_historical"),
-    "Bear": load_csv(f"{args.ticker}_bear"),
-    "Base": load_csv(f"{args.ticker}_base"),
-    "Bull": load_csv(f"{args.ticker}_bull"),
-}
-
-# Check if any dataframes are None and handle gracefully
-if any(df is None for df in dfs.values()):
-    print("Error: Some CSV files could not be loaded. Available files:")
-    if os.path.exists(DATA_DIR):
-        for fname in os.listdir(DATA_DIR):
-            if fname.lower().endswith('.csv'):
-                print(f"  - {fname}")
-    else:
-        print(f"Directory {DATA_DIR} does not exist")
-    print("Exiting...")
-    exit(1)
-
-years = dfs["Historical"].columns.tolist()
-main_metrics = [
-    "Revenue", "NetIncome", "EPS", "GrossMargin", "OperatingMargin",
-    "NetMargin", "FCF", "FCFMargin"
-]
-
-def create_revenue_table_figure(scenario):
-    """Create a figure specifically for revenue table export"""
-    df = dfs[scenario].copy()
-    # remove the historical years to show only projections from CURRENT_YEAR onwards
-    # Find the column index for CURRENT_YEAR
-    
-    if CURRENT_YEAR in df.columns:
-        start_idx = df.columns.get_loc(CURRENT_YEAR)
-        df = df.iloc[:, start_idx:]
-    else:
-        # If CURRENT_YEAR is not found, remove the first 4 years
-        df = df.iloc[:, 4:]
-
-    # Add projected price using PriceProjector
-    pe = PE_MAP.get(scenario, 25)
-    projector = PriceProjector(
-        pe_ratio=pe,
-        current_year=CURRENT_YEAR,
-        current_price=CURRENT_YEAR_PRICE,
+    return DashboardConfig(
+        ticker=args.ticker,
+        current_year=args.current_year,
+        current_price=args.current_price,
+        data_dir=Path(args.input_dir),
+        output_dir=Path(args.output_dir),
+        scenarios=scenarios,
+        metrics=ConfigManager.get_default_metrics(),
         target_pe=args.target_pe,
-        years_to_profitability=YEARS_TO_PROFITABILITY
+        years_to_profitability=args.years_to_profitability,
+        port=args.port
     )
-    # Calculate growth percentages for each metric
-    for metric in main_metrics:
-        if metric in df.index:
-            # Create a new row for growth percentages
-            growth_row_name = f"{metric}_Growth"
-            # Convert DataFrame to object type to avoid dtype warnings when inserting strings
-            if df.dtypes[df.columns[0]] != 'object':
-                df = df.astype(object)
-            df.loc[growth_row_name] = [""] * len(df.columns)  # Initialize with empty strings
-            
-            # Calculate growth % for each year relative to previous year
-            for i, col in enumerate(df.columns[1:], 1):
-                try:
-                    current_val = float(df.loc[metric, col])
-                    prev_val = float(df.loc[metric, df.columns[i-1]])
-                    if prev_val != 0 and not pd.isna(prev_val) and not pd.isna(current_val):
-                        growth_pct = (current_val - prev_val) / abs(prev_val) * 100
-                        df.loc[growth_row_name, col] = f"{growth_pct:+.1f}%"
-                    else:
-                        df.loc[growth_row_name, col] = ""
-                except (ValueError, TypeError):
-                    df.loc[growth_row_name, col] = ""
-            
-            # First year has no growth to compare against
-            df.loc[growth_row_name, df.columns[0]] = ""
 
+def main():
+    """Main application entry point"""
+    args = parse_arguments()
+    config = create_config(args)
     
-    projected_price = projector.project_prices(df)
-    df.loc["Price"] = projected_price
-
-    # Create table data with all metrics
-    table_data = []
-    headers = ['Metric'] + list(df.columns)
+    # Initialize components
+    data_manager = DataManager(config)
+    formatter = DataFormatter()
+    chart_generator = ChartGenerator(config, formatter)
     
-    # Add all main metrics + ProjectedPrice with selective growth rows
-    for metric in main_metrics + ["Price"]:
-        if metric in df.index:
-            # Add the main metric row
-            metric_name = camel_to_spaces(metric)
-            if metric == "FCFMargin":
-                metric_name = "FCF Margin"
-            row = [metric_name]
-            for col in df.columns:
-                val = df.loc[metric, col]
-                if pd.isna(val):
-                    row.append("")
-                else:
-                    if metric in NUMERIC_METRICS:
-                        row.append(format_large_number(val, metric))
-                    else:
-                        row.append(str(val))
-            table_data.append(row)
-            
-            # Add growth row only for key metrics (Revenue, Net Income, EPS, FCF)
-            if metric in ["Revenue", "NetIncome", "EPS", "FCF"]:
-                growth_row_name = f"{metric}_Growth"
-                if growth_row_name in df.index:
-                    growth_metric_name = f"{metric_name} Growth %"
-                    row = [growth_metric_name]
-                    for col in df.columns:
-                        val = df.loc[growth_row_name, col]
-                        row.append(val if val != "" else "")
-                    table_data.append(row)
-
-    fig = go.Figure(data=[go.Table(
-        columnwidth=[180] + [80] * (len(df.columns)),  # 180px for first column, 80px for the rest
-        header=dict(
-            values=headers,
-            fill_color='#e9ecef',
-            font=dict(size=14, color='black', family='Arial, sans-serif'),
-            align='center',
-            height=35,
-            line=dict(color='#ced4da', width=2)
-        ),
-        cells=dict(
-            values=list(zip(*table_data)),
-            fill_color=[['#f0f2f4', '#ffffff'] * (len(table_data)//2 + 1)][:len(table_data)],
-            font=dict(size=12, color='black', family='Arial, sans-serif'),
-            height=30,
-            align='center',
-            line=dict(color='#dee2e6', width=1)
-        )
-    )])
-
-    # Dynamically set figure height based on number of rows
-    # Account for header (35px) + each row (30px) + margins + extra space
-    header_height = 35
-    row_height = 30
-    total_table_height = header_height + (row_height * len(table_data))
-    fig_height = max(2000, total_table_height + 800)  # Much larger height to ensure all rows are visible
-
-    fig.update_layout(
-        title=f"{args.ticker} - {scenario} Case Financial Projections ({CURRENT_YEAR}-{list(df.columns)[-1]})",
-        title_font=dict(size=16, family='Arial, sans-serif'),
-        width=1000,
-        height=fig_height,
-        margin=dict(l=20, r=20, t=60, b=20),
-        # Force the table to show all rows
-        autosize=False
-    )
-    return fig
-
-def export_revenue_tables_png():
-    """Export revenue tables as PNG files"""
-
-
-    scenarios = ["Bear", "Base", "Bull"]
-    for scenario in scenarios:
-        fig = create_revenue_table_figure(scenario)
-        filename = TICKER_TABLES_DIR / f"{args.ticker}_{scenario.lower()}_revenue_table.png"
-        pio.write_image(fig, str(filename), format='png')
-        print(f"Exported {filename}")
-
-def scenario_charts_table(scenario):
-    """
-    Create a table for a given scenario.
-    """
-    df = dfs[scenario].copy()
-    cards = []
-
-    # --- Add Projected Price using PriceProjector ---
-    pe = PE_MAP.get(scenario, 25)
-    # Only project price if CURRENT_YEAR is in df.columns
-    current_year_for_proj = CURRENT_YEAR if CURRENT_YEAR in df.columns else df.columns[-1]
-    projector = PriceProjector(
-        pe_ratio=pe,
-        current_year=current_year_for_proj,
-        current_price=CURRENT_YEAR_PRICE,
-        target_pe=args.target_pe,
-        years_to_profitability=YEARS_TO_PROFITABILITY
-    )
-    projected_price = projector.project_prices(df)
-    df.loc["Price"] = projected_price
-
-    # --- Plot each metric (main metrics + ProjectedPrice) ---
-    for metric in main_metrics + ["Price"]:
-        if metric in df.index:
-            yvals = df.loc[metric].values
-            years = df.columns.tolist()
-
-            # % change (skip for ProjectedPrice)
-            pct = [""]
-            for i in range(1, len(yvals)):
-                try:
-                    prev = float(yvals[i-1])
-                    now = float(yvals[i])
-                    if metric == "Price":
-                        pct.append("")
-                    elif prev == 0 or pd.isna(prev) or pd.isna(now):
-                        pct.append("")
-                    else:
-                        change = 100 * (now - prev) / abs(prev)
-                        pct.append(f"{change:+.1f}%")
-                except Exception:
-                    pct.append("")
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=years, y=yvals,
-                mode='lines+markers+text',
-                name=scenario if metric != "Price" else "Projected Price",
-                text=pct,
-                textposition="top center",
-                textfont=dict(size=13, color="black"),
-                hovertemplate="%{y}<br>%{text} from last year<extra></extra>",
-                marker=dict(size=8)
-            ))
-            fig.update_layout(
-                title=f"{camel_to_spaces(metric)} — {scenario} Case",
-                legend=dict(x=0.01, y=0.98),
-                margin={"r":0,"t":30,"l":0,"b":0},
-                height=300,
-                plot_bgcolor="#fafbfc",
-                paper_bgcolor="#fafbfc",
-                font=dict(family="Inter, Arial, sans-serif", size=15)
-            )
-            cards.append(dcc.Graph(figure=fig, style={"marginBottom": "32px"}))
-
-    # --- Table for scenario ---
-    df_disp = df.loc[[m for m in main_metrics + ["Price"] if m in df.index]]
-    df_disp = df_disp.reset_index().rename(columns={'index': 'Metric'})
-
-    # Apply camel_to_spaces to 'Metric' column for display
-    df_disp["Metric"] = df_disp["Metric"].apply(camel_to_spaces)
-
-    # Format large numbers in the DataFrame
-    for metric in main_metrics + ["Price"]:
-        if metric in df.index:
-            metric_name = camel_to_spaces(metric)
-            if metric == "FCFMargin":
-                metric_name = "FCF Margin"
-            
-            for col in df_disp.columns[1:]:  # Skip the 'Metric' column
-                if metric_name in df_disp['Metric'].values:
-                    row_idx = df_disp[df_disp['Metric'] == metric_name].index[0]
-                    val = df_disp.loc[row_idx, col]
-                    if not pd.isna(val):
-                        df_disp.loc[row_idx, col] = format_large_number(val, metric)
-
-    cards.append(html.H4(f"{scenario} Table", style={"marginTop": "30px", "marginBottom": "10px"}))
-    cards.append(dash_table.DataTable(
-        data=df_disp.to_dict("records"),
-        columns=[{"name": c, "id": c} for c in df_disp.columns],
-        style_table={'overflowX': 'auto', "padding": "0", "marginBottom": "32px"},
-        style_data={
-            'backgroundColor': '#fff',
-            'color': '#222',
-            'fontSize': 16,
-            'padding': "8px",
-        },
-        style_header={
-            'backgroundColor': '#e9ecef',
-            'fontWeight': 'bold',
-            'fontSize': 17,
-            'borderTop': '2px solid #ced4da',
-            'borderBottom': '2px solid #ced4da'
-        },
-        style_cell={
-            'textAlign': 'center',
-            'minWidth': '90px', 'width': '90px', 'maxWidth': '120px',
-            'padding': "8px"
-        },
-        style_data_conditional=[
-            {
-                'if': {'row_index': 'odd'},
-                'backgroundColor': '#f6f8fa'
-            },
-            {
-                'if': {'column_id': 'Metric'},
-                'textAlign': 'left',
-                'fontWeight': 'bold',
-                'backgroundColor': '#f0f2f4'
-            }
-        ]
-    ))
-    return html.Div(
-        cards,
-        style={
-            "background": "#fff",
-            "borderRadius": "18px",
-            "boxShadow": "0 6px 24px 0 rgba(0,0,0,0.06)",
-            "padding": "32px 32px 16px 32px",
-            "marginBottom": "36px"
-        }
-    )
-
-app = dash.Dash(__name__)
-app.layout = html.Div([
-    html.H1(f"{args.ticker} Financial Model Dashboard", style={"marginTop":"28px", "marginBottom":"8px", "fontFamily":"Inter, Arial, sans-serif"}),
-    html.H3("Historical, Bear, Base, and Bull Scenarios", style={"color":"#444", "fontFamily":"Inter, Arial, sans-serif", "marginBottom":"22px"}),
-    html.Div([
-        html.H2("Bear Case", style={"marginTop":"12px", "color":"#ce3c3c", "fontFamily":"Inter, Arial, sans-serif"}),
-        scenario_charts_table("Bear"),
-        html.H2("Base Case", style={"marginTop":"12px", "color":"#368fc7", "fontFamily":"Inter, Arial, sans-serif"}),
-        scenario_charts_table("Base"),
-        html.H2("Bull Case", style={"marginTop":"12px", "color":"#18a551", "fontFamily":"Inter, Arial, sans-serif"}),
-        scenario_charts_table("Bull"),
-        html.H2("Historical Data", style={"marginTop":"12px", "color":"#444", "fontFamily":"Inter, Arial, sans-serif"}),
-        scenario_charts_table("Historical"),
-    ], style={"overflowY": "auto", "height": "90vh", "padding": "30px"})
-], style={
-    "background": "#f3f4f7",
-    "minHeight": "100vh",
-    "fontFamily":"Inter, Arial, sans-serif"
-})
+    # Load and validate data
+    data = data_manager.load_all_data()
+    if not data_manager.validate_data(data):
+        return
+    
+    # Export if requested
+    if args.export:
+        exporter = DataExporter(config, chart_generator)
+        exporter.export_scenario_tables(data)
+        print("Export completed")
+    
+    # Run dashboard if requested
+    if args.run_dashboard:
+        dashboard_generator = DashboardGenerator(config, data_manager, chart_generator, formatter)
+        app = dashboard_generator.create_dashboard(data)
+        app.run_server(debug=True, port=config.port)
 
 if __name__ == "__main__":
-    # Export PNG files if requested
-    if args.download:
-        print("Exporting PNG files")
-        export_revenue_tables_png()
-    if args.charts:
-        print("Starting Dash app")
-        app.run(debug=True, port=args.port)
+    main()
